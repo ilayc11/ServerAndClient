@@ -56,14 +56,15 @@ while True:
             print(f"  - UDP Port: {udp_port}")
             print(f"  - TCP Port: {tcp_port}")
 
+            # Connect to the server via TCP
             tcp_socket = socket.create_connection((address[0], tcp_port))
             print(f"Connected to server at {address[0]}:{tcp_port}")
 
-            # Step 2: Request file size
-            file_size = input("Enter file size to request (bytes): ")
+            # Request file size from the user
+            file_size = input("Enter file size to request (bytes): ").strip()
             tcp_socket.sendall((file_size + "\n").encode())
 
-            # Step 3: Receive the data
+            # Receive the response
             bytes_received = 0
             while True:
                 chunk = tcp_socket.recv(BUFFER_SIZE)
@@ -72,5 +73,8 @@ while True:
                 bytes_received += len(chunk)
             print(f"Received {bytes_received} bytes from server")
             tcp_socket.close()
+
+            # Send UDP request
+            send_udp_request(address[0], udp_port, int(file_size))
     except Exception as e:
         print(f"Error: {e}")

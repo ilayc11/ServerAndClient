@@ -48,6 +48,10 @@ def handle_udp_requests():
     udp_socket.bind(("", SERVER_UDP_PORT))
     print(f"Server is listening for UDP requests on port {SERVER_UDP_PORT}...")
 
+    MAX_PAYLOAD_SIZE = 1400  # Safe payload size considering network overhead
+    HEADER_SIZE = 20
+    MAX_DATAGRAM_SIZE = MAX_PAYLOAD_SIZE + HEADER_SIZE
+
     while True:
         data, address = udp_socket.recvfrom(BUFFER_SIZE)
         try:
@@ -60,15 +64,19 @@ def handle_udp_requests():
             print(f"Valid UDP request from {address}: file size {file_size} bytes")
 
             # Simulate sending data packets
-            total_packets = (file_size + BUFFER_SIZE - 1) // BUFFER_SIZE
+            total_packets = (file_size + MAX_PAYLOAD_SIZE - 1) // MAX_PAYLOAD_SIZE
             for packet_number in range(total_packets):
+                # Calculate payload size for the last packet
+                remaining_bytes = file_size - packet_number * MAX_PAYLOAD_SIZE
+                payload_size = min(remaining_bytes, MAX_PAYLOAD_SIZE)
+
                 packet = struct.pack(
                     ">IBQQ",
                     MAGIC_COOKIE,
                     0x4,  # Payload message type
                     total_packets,
                     packet_number,
-                ) + b'A' * (BUFFER_SIZE - 20)  # Payload data
+                ) + b'A' * payload_size
                 udp_socket.sendto(packet, address)
 
             print(f"Sent {total_packets} packets to {address}")
