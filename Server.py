@@ -24,7 +24,7 @@ def offer_broadcast():
         print(f"Broadcasted offer message to UDP port {UDP_PORT}")
         time.sleep(BROADCAST_INTERVAL)
 
-def handle_tcp_client(connection,address):
+def handle_client(connection,address):
     print(f"Connected to TCP client {address}")
     try:
         request=connection.recv(BUFFER_SIZE).decode().strip()
@@ -42,6 +42,39 @@ def handle_tcp_client(connection,address):
     finally:
         connection.close()
 
+def handle_udp_requests():
+    """Handle incoming UDP requests."""
+    udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    udp_socket.bind(("", SERVER_UDP_PORT))
+    print(f"Server is listening for UDP requests on port {SERVER_UDP_PORT}...")
+
+    while True:
+        data, address = udp_socket.recvfrom(BUFFER_SIZE)
+        try:
+            # Parse the request
+            magic_cookie, message_type, file_size = struct.unpack(">IBQ", data)
+            if magic_cookie != MAGIC_COOKIE or message_type != 0x3:
+                print(f"Invalid UDP request from {address}")
+                continue
+
+            print(f"Valid UDP request from {address}: file size {file_size} bytes")
+
+            # Simulate sending data packets
+            total_packets = (file_size + BUFFER_SIZE - 1) // BUFFER_SIZE
+            for packet_number in range(total_packets):
+                packet = struct.pack(
+                    ">IBQQ",
+                    MAGIC_COOKIE,
+                    0x4,  # Payload message type
+                    total_packets,
+                    packet_number,
+                ) + b'A' * (BUFFER_SIZE - 20)  # Payload data
+                udp_socket.sendto(packet, address)
+
+            print(f"Sent {total_packets} packets to {address}")
+        except Exception as e:
+            print(f"Error handling UDP request from {address}: {e}")
+
 def accept_connections():
     tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     tcp_socket.bind(('',SERVER_TCP_PORT))
@@ -49,8 +82,9 @@ def accept_connections():
     print(f"Server is listening for TCP connections on port {SERVER_TCP_PORT}...")
     while True:
         connection, address = tcp_socket.accept()
-        threading.Thread(target=handle_tcp_client, args=(connection, address)).start()
+        threading.Thread(target=handle_client, args=(connection, address)).start()
 
 if __name__ == "__main__":
     threading.Thread(target=offer_broadcast, daemon=True).start()
+    threading.Thread(target=handle_udp_requests, daemon=True).start()
     accept_connections()
