@@ -14,6 +14,35 @@ MAX_CLIENTS = 100
 MAX_RETRIES = 3
 
 
+# ANSI Color codes
+class Colors:
+    HEADER = '\033[95m'  # Pink
+    BLUE = '\033[94m'  # Blue
+    CYAN = '\033[96m'  # Cyan
+    GREEN = '\033[92m'  # Green
+    YELLOW = '\033[93m'  # Yellow
+    RED = '\033[91m'  # Red
+    ENDC = '\033[0m'  # Reset color
+    BOLD = '\033[1m'  # Bold
+    UNDERLINE = '\033[4m'  # Underline
+
+
+def format_size(size_bytes):
+    for unit in ['B', 'KB', 'MB', 'GB']:
+        if size_bytes < 1024.0:
+            return f"{size_bytes:.2f} {unit}"
+        size_bytes /= 1024.0
+    return f"{size_bytes:.2f} TB"
+
+
+def format_speed(bits_per_second):
+    for unit in ['bps', 'Kbps', 'Mbps', 'Gbps']:
+        if bits_per_second < 1000.0:
+            return f"{bits_per_second:.2f} {unit}"
+        bits_per_second /= 1000.0
+    return f"{bits_per_second:.2f} Tbps"
+
+
 class SpeedTestServer:
     def __init__(self):
         try:
@@ -40,10 +69,13 @@ class SpeedTestServer:
             self.active_clients = {}
             self.clients_lock = threading.Lock()
 
-            print(f"Server started, listening on IP address {self.SERVER_IP}")
+            print(f"{Colors.HEADER}{Colors.BOLD}Speed Test Server Started!{Colors.ENDC}")
+            print(f"{Colors.BLUE}Listening on IP address: {Colors.CYAN}{self.SERVER_IP}{Colors.ENDC}")
+            print(f"{Colors.BLUE}TCP Port: {Colors.CYAN}{self.SERVER_TCP_PORT}{Colors.ENDC}")
+            print(f"{Colors.BLUE}UDP Port: {Colors.CYAN}{self.SERVER_UDP_PORT}{Colors.ENDC}")
 
         except Exception as e:
-            print(f"Failed to initialize server: {e}")
+            print(f"{Colors.RED}Failed to initialize server: {e}{Colors.ENDC}")
             sys.exit(1)
 
     def track_client(self, client_address, conn_type):
@@ -60,7 +92,6 @@ class SpeedTestServer:
                     del self.active_clients[client_address]
 
     def offer_broadcast(self):
-        """Broadcast offer messages."""
         udp_broadcast = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         udp_broadcast.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 
@@ -74,7 +105,7 @@ class SpeedTestServer:
                 udp_broadcast.sendto(message, ('<broadcast>', UDP_PORT))
                 time.sleep(1)
             except Exception as e:
-                print(f"Broadcast error: {e}")
+                print(f"{Colors.RED}Broadcast error: {e}{Colors.ENDC}")
                 time.sleep(1)
         udp_broadcast.close()
 
@@ -91,7 +122,8 @@ class SpeedTestServer:
             if file_size <= 0:
                 return
 
-            print(f"Received TCP request from {address}: {file_size} bytes")
+            print(f"{Colors.GREEN}➜ New TCP client connected from {Colors.CYAN}{address}{Colors.ENDC}")
+            print(f"{Colors.BLUE}Requested size: {Colors.CYAN}{format_size(file_size)}{Colors.ENDC}")
 
             bytes_sent = 0
             start_time = time.time()
@@ -111,10 +143,16 @@ class SpeedTestServer:
 
             duration = time.time() - start_time
             speed = (bytes_sent * 8) / duration if duration > 0 else 0
-            print(f"Completed TCP transfer to {address}: {bytes_sent} bytes in {duration:.2f} seconds")
+
+            print(
+                f"{Colors.GREEN}✓ TCP transfer complete to {Colors.CYAN}{address}{Colors.ENDC}\n"
+                f"  {Colors.BLUE}├─ Sent: {Colors.CYAN}{format_size(bytes_sent)}{Colors.ENDC}\n"
+                f"  {Colors.BLUE}├─ Time: {Colors.CYAN}{duration:.2f}s{Colors.ENDC}\n"
+                f"  {Colors.BLUE}└─ Speed: {Colors.CYAN}{format_speed(speed)}{Colors.ENDC}"
+            )
 
         except Exception as e:
-            print(f"Error handling TCP client {address}: {e}")
+            print(f"{Colors.RED}✗ Error handling TCP client {address}: {e}{Colors.ENDC}")
         finally:
             connection.close()
             self.untrack_client(address[0], 'tcp')
@@ -138,7 +176,8 @@ class SpeedTestServer:
                     if magic_cookie != MAGIC_COOKIE or message_type != 0x3:
                         continue
 
-                    print(f"Received UDP request from {address}: {file_size} bytes")
+                    print(f"{Colors.GREEN}➜ New UDP request from {Colors.CYAN}{address}{Colors.ENDC}")
+                    print(f"{Colors.BLUE}Requested size: {Colors.CYAN}{format_size(file_size)}{Colors.ENDC}")
 
                     total_packets = (file_size + MAX_PAYLOAD_SIZE - 1) // MAX_PAYLOAD_SIZE
                     start_time = time.time()
@@ -164,17 +203,24 @@ class SpeedTestServer:
                         bytes_sent += payload_size
 
                     duration = time.time() - start_time
-                    print(f"Completed UDP transfer to {address}: {bytes_sent} bytes in {duration:.2f} seconds")
+                    speed = (bytes_sent * 8) / duration if duration > 0 else 0
+                    print(
+                        f"{Colors.GREEN}✓ UDP transfer complete to {Colors.CYAN}{address}{Colors.ENDC}\n"
+                        f"  {Colors.BLUE}├─ Sent: {Colors.CYAN}{format_size(bytes_sent)}{Colors.ENDC}\n"
+                        f"  {Colors.BLUE}├─ Packets: {Colors.CYAN}{total_packets}{Colors.ENDC}\n"
+                        f"  {Colors.BLUE}├─ Time: {Colors.CYAN}{duration:.2f}s{Colors.ENDC}\n"
+                        f"  {Colors.BLUE}└─ Speed: {Colors.CYAN}{format_speed(speed)}{Colors.ENDC}"
+                    )
 
                 except Exception as e:
-                    print(f"UDP transfer error to {address}: {e}")
+                    print(f"{Colors.RED}✗ UDP transfer error to {address}: {e}{Colors.ENDC}")
                 finally:
                     self.untrack_client(address[0], 'udp')
 
             except socket.timeout:
                 continue
             except Exception as e:
-                print(f"UDP handler error: {e}")
+                print(f"{Colors.RED}✗ UDP handler error: {e}{Colors.ENDC}")
                 time.sleep(1)
 
     def run(self):
@@ -190,16 +236,17 @@ class SpeedTestServer:
                 except socket.timeout:
                     continue
                 except Exception as e:
-                    print(f"Error accepting connection: {e}")
+                    print(f"{Colors.RED}✗ Error accepting connection: {e}{Colors.ENDC}")
                     time.sleep(1)
 
         except KeyboardInterrupt:
-            print("Server shutting down...")
+            print(f"{Colors.YELLOW}Server shutting down...{Colors.ENDC}")
         finally:
             self.is_running = False
             self.tcp_socket.close()
             self.udp_socket.close()
             self.thread_pool.shutdown(wait=False)
+            print(f"{Colors.GREEN}Server shutdown complete{Colors.ENDC}")
 
 
 if __name__ == "__main__":
