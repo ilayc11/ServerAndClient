@@ -2,14 +2,17 @@ import socket
 import struct
 import threading
 import time
-from datetime import datetime
 import sys
+from queue import Queue
+import signal
 
 # Constants
 MAGIC_COOKIE = 0xabcddcba
 OFFER_TYPE = 0x2
 UDP_PORT = 13117
 BUFFER_SIZE = 1024
+MAX_RETRIES = 3
+TIMEOUT = 30
 
 
 class SpeedTestClient:
@@ -18,67 +21,87 @@ class SpeedTestClient:
         self.current_server = None
         self.transfer_threads = []
         self.transfers_completed = False
+        self.error_queue = Queue()
+        self.is_running = True
+        signal.signal(signal.SIGINT, self.handle_interrupt)
+
+    def handle_interrupt(self, signum, frame):
+        print("\nShutting down client...")
+        self.is_running = False
+        self.transfers_completed = True
 
     def get_user_parameters(self):
-        """Get test parameters from user."""
-        while True:
-            try:
-                self.file_size = int(input("Enter file size to transfer (bytes): "))
-                self.tcp_connections = int(input("Enter number of TCP connections: "))
-                self.udp_connections = int(input("Enter number of UDP connections: "))
-                if all(x >= 0 for x in [self.file_size, self.tcp_connections, self.udp_connections]):
-                    break
-                print("Please enter non-negative numbers")
-            except ValueError:
-                print("Please enter valid numbers")
-        self.state = "LOOKING_FOR_SERVER"
+        try:
+            while True:
+                try:
+                    self.file_size = int(input("Enter file size to transfer (bytes): "))
+                    self.tcp_connections = int(input("Enter number of TCP connections: "))
+                    self.udp_connections = int(input("Enter number of UDP connections: "))
+
+                    if self.file_size > 0 and self.tcp_connections >= 0 and self.udp_connections >= 0:
+                        if self.tcp_connections + self.udp_connections > 0:
+                            break
+                    print("Please enter valid numbers (file size > 0, at least one connection)")
+                except ValueError:
+                    print("Please enter valid numbers")
+
+            self.state = "LOOKING_FOR_SERVER"
+
+        except KeyboardInterrupt:
+            print("\nClient shutdown requested")
+            sys.exit(0)
 
     def handle_tcp_transfer(self, server_ip, tcp_port, connection_id):
-        """Handle a single TCP transfer."""
-        try:
-            start_time = time.time()
-            tcp_socket = socket.create_connection((server_ip, tcp_port))
+        for retry in range(MAX_RETRIES):
+            tcp_socket = None
+            try:
+                start_time = time.time()
+                tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                tcp_socket.settimeout(TIMEOUT)
 
-            # Send file size request
-            tcp_socket.sendall(f"{self.file_size}\n".encode())
+                tcp_socket.connect((server_ip, tcp_port))
+                tcp_socket.sendall(f"{self.file_size}\n".encode())
 
-            # Receive data
-            bytes_received = 0
-            while bytes_received < self.file_size:
-                chunk = tcp_socket.recv(BUFFER_SIZE)
-                if not chunk:
-                    break
-                bytes_received += len(chunk)
+                bytes_received = 0
+                while bytes_received < self.file_size and self.is_running:
+                    chunk = tcp_socket.recv(BUFFER_SIZE)
+                    if not chunk:
+                        if bytes_received < self.file_size:
+                            raise ConnectionError("Server closed connection prematurely")
+                        break
+                    bytes_received += len(chunk)
 
-            end_time = time.time()
-            duration = end_time - start_time
-            speed = (bytes_received * 8) / duration  # bits per second
+                end_time = time.time()
+                duration = end_time - start_time
+                speed = (bytes_received * 8) / duration if duration > 0 else 0
 
-            print(f"\033[32mTCP transfer #{connection_id} finished, total time: {duration:.2f} seconds, "
-                  f"total speed: {speed:.1f} bits/second\033[0m")
+                print(f"TCP transfer #{connection_id} finished, total time: {duration:.2f} seconds, "
+                      f"total speed: {speed:.1f} bits/second")
+                break
 
-        except Exception as e:
-            print(f"\033[31mError in TCP transfer #{connection_id}: {e}\033[0m")
-        finally:
-            tcp_socket.close()
+            except Exception as e:
+                print(f"TCP transfer #{connection_id} error: {e}")
+                if retry < MAX_RETRIES - 1:
+                    print(f"Retrying TCP transfer #{connection_id}...")
+                    time.sleep(1)
+            finally:
+                if tcp_socket:
+                    tcp_socket.close()
 
     def handle_udp_transfer(self, server_ip, udp_port, connection_id):
-        """Handle a single UDP transfer."""
         try:
             start_time = time.time()
             udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            udp_socket.settimeout(1)  # 1 second timeout as per requirements
+            udp_socket.settimeout(1)
 
-            # Send request
             request = struct.pack(">IBQ", MAGIC_COOKIE, 0x3, self.file_size)
             udp_socket.sendto(request, (server_ip, udp_port))
 
-            # Receive packets
             received_packets = set()
             total_packets = None
             bytes_received = 0
 
-            while True:
+            while self.is_running:
                 try:
                     data, _ = udp_socket.recvfrom(BUFFER_SIZE)
                     if len(data) < struct.calcsize(">IBQQ"):
@@ -97,28 +120,29 @@ class SpeedTestClient:
                     bytes_received += len(payload)
 
                 except socket.timeout:
-                    break
+                    if total_packets and len(received_packets) == total_packets:
+                        break
+                    if time.time() - start_time > TIMEOUT:
+                        break
 
             end_time = time.time()
             duration = end_time - start_time
-            speed = (bytes_received * 8) / duration  # bits per second
+            speed = (bytes_received * 8) / duration if duration > 0 else 0
 
             if total_packets:
                 success_rate = (len(received_packets) / total_packets) * 100
-                print(f"\033[34mUDP transfer #{connection_id} finished, total time: {duration:.2f} seconds, "
+                print(f"UDP transfer #{connection_id} finished, total time: {duration:.2f} seconds, "
                       f"total speed: {speed:.1f} bits/second, "
-                      f"percentage of packets received successfully: {success_rate:.1f}%\033[0m")
+                      f"percentage of packets received successfully: {success_rate:.1f}%")
 
         except Exception as e:
-            print(f"\033[31mError in UDP transfer #{connection_id}: {e}\033[0m")
+            print(f"UDP transfer #{connection_id} error: {e}")
         finally:
             udp_socket.close()
 
     def start_speed_test(self):
-        """Start all transfers in parallel."""
         self.transfer_threads = []
 
-        # Start TCP transfers
         for i in range(self.tcp_connections):
             thread = threading.Thread(
                 target=self.handle_tcp_transfer,
@@ -127,7 +151,6 @@ class SpeedTestClient:
             self.transfer_threads.append(thread)
             thread.start()
 
-        # Start UDP transfers
         for i in range(self.udp_connections):
             thread = threading.Thread(
                 target=self.handle_udp_transfer,
@@ -136,49 +159,45 @@ class SpeedTestClient:
             self.transfer_threads.append(thread)
             thread.start()
 
-        # Wait for all transfers to complete
         for thread in self.transfer_threads:
             thread.join()
 
-        print("\033[33mAll transfers complete!\033[0m")
+        print("All transfers complete!")
         self.transfers_completed = True
 
     def run(self):
-        """Main client loop."""
-        print("\033[36mSpeed Test Client Started\033[0m")
-
-        # Initial setup
+        print("Speed Test Client Started")
         self.get_user_parameters()
 
-        # Create UDP socket for offers
         udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         udp_socket.bind(("", UDP_PORT))
-        udp_socket.settimeout(1)  # Add timeout to allow checking transfers_completed flag
+        udp_socket.settimeout(1)
 
-        print("\033[36mClient started, listening for offer requests...\033[0m")
+        print("Client started, listening for offer requests...")
 
-        while not self.transfers_completed:
+        while not self.transfers_completed and self.is_running:
             try:
-                # Wait for offer
                 data, address = udp_socket.recvfrom(BUFFER_SIZE)
                 magic_cookie, message_type, udp_port, tcp_port = struct.unpack('>IBHH', data)
 
                 if magic_cookie == MAGIC_COOKIE and message_type == OFFER_TYPE:
-                    print(f"\033[32mReceived offer from {address[0]}\033[0m")
+                    print(f"Received offer from {address[0]}")
                     self.current_server = (address[0], udp_port, tcp_port)
                     self.start_speed_test()
+                    break  # Exit after completing transfers
 
             except socket.timeout:
-                continue  # Continue waiting if no offer received
-            except Exception as e:
-                print(f"\033[31mError: {e}\033[0m")
-                time.sleep(1)  # Prevent tight loop on error
+                continue
 
-        print("\033[36mClient shutting down...\033[0m")
+            except Exception as e:
+                print(f"Error: {e}")
+                time.sleep(1)
+
+
+        print("Client shutting down...")
         udp_socket.close()
         sys.exit(0)
-
 
 if __name__ == "__main__":
     client = SpeedTestClient()
