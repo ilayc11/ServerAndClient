@@ -2,97 +2,148 @@ import socket
 import time
 import struct
 import threading
+import sys
 
-MAGIC_COOKIE=0xabcddcba
-OFFER_TYPE=0X2
-UDP_PORT=13117
-SERVER_UDP_PORT=12345
-SERVER_TCP_PORT=54321
-BROADCAST_INTERVAL=1
+# Constants
+MAGIC_COOKIE = 0xabcddcba
+OFFER_TYPE = 0x2
+UDP_PORT = 13117
 BUFFER_SIZE = 1024
 
 
+class SpeedTestServer:
+    def __init__(self):
+        # Get available ports
+        self.tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.tcp_socket.bind(('', 0))
+        self.SERVER_TCP_PORT = self.tcp_socket.getsockname()[1]
 
+        self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.udp_socket.bind(('', 0))
+        self.SERVER_UDP_PORT = self.udp_socket.getsockname()[1]
 
-def offer_broadcast():
-    udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    print("Server is broadcasting offers...")
-    while True:
-        message=struct.pack('>IBHH',MAGIC_COOKIE,OFFER_TYPE,SERVER_UDP_PORT,SERVER_TCP_PORT)
-        udp_socket.sendto(message,('<broadcast>',UDP_PORT))
-        print(f"Broadcasted offer message to UDP port {UDP_PORT}")
-        time.sleep(BROADCAST_INTERVAL)
+        # Get server IP
+        hostname = socket.gethostname()
+        self.SERVER_IP = socket.gethostbyname(hostname)
 
-def handle_client(connection,address):
-    print(f"Connected to TCP client {address}")
-    try:
-        request=connection.recv(BUFFER_SIZE).decode().strip()
-        print(f"Received file size request: {request} bytes")
-        file_size = int(request)
-        data = b'A' * BUFFER_SIZE  # Dummy data
-        bytes_sent = 0
-        while bytes_sent < file_size:
-            connection.sendall(data)
-            bytes_sent += len(data)
-        print(f"Finished sending {bytes_sent} bytes to {address}")
-    except Exception as e:
-        print(f"Error handling client {address}: {e}")
+        self.tcp_socket.listen(5)
 
-    finally:
-        connection.close()
+    def offer_broadcast(self):
+        """Broadcast offer messages."""
+        udp_broadcast = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        udp_broadcast.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 
-def handle_udp_requests():
-    """Handle incoming UDP requests."""
-    udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    udp_socket.bind(("", SERVER_UDP_PORT))
-    print(f"Server is listening for UDP requests on port {SERVER_UDP_PORT}...")
+        print(f"\033[36mServer started, listening on IP address {self.SERVER_IP}\033[0m")
 
-    MAX_PAYLOAD_SIZE = 1400  # Safe payload size considering network overhead
-    HEADER_SIZE = 20
-    MAX_DATAGRAM_SIZE = MAX_PAYLOAD_SIZE + HEADER_SIZE
+        while True:
+            try:
+                message = struct.pack('>IBHH',
+                                      MAGIC_COOKIE,
+                                      OFFER_TYPE,
+                                      self.SERVER_UDP_PORT,
+                                      self.SERVER_TCP_PORT)
+                udp_broadcast.sendto(message, ('<broadcast>', UDP_PORT))
+                time.sleep(1)  # Send offer every second
+            except Exception as e:
+                print(f"\033[31mBroadcast error: {e}\033[0m")
+                time.sleep(1)
 
-    while True:
-        data, address = udp_socket.recvfrom(BUFFER_SIZE)
+    def handle_tcp_client(self, connection, address):
+        """Handle TCP client connection."""
         try:
-            # Parse the request
-            magic_cookie, message_type, file_size = struct.unpack(">IBQ", data)
-            if magic_cookie != MAGIC_COOKIE or message_type != 0x3:
-                print(f"Invalid UDP request from {address}")
-                continue
+            # Get file size request
+            request = connection.recv(BUFFER_SIZE).decode().strip()
+            file_size = int(request)
+            print(f"\033[32mReceived TCP request from {address}: {file_size} bytes\033[0m")
 
-            print(f"Valid UDP request from {address}: file size {file_size} bytes")
+            # Send data
+            bytes_sent = 0
+            start_time = time.time()
 
-            # Simulate sending data packets
-            total_packets = (file_size + MAX_PAYLOAD_SIZE - 1) // MAX_PAYLOAD_SIZE
-            for packet_number in range(total_packets):
-                # Calculate payload size for the last packet
-                remaining_bytes = file_size - packet_number * MAX_PAYLOAD_SIZE
-                payload_size = min(remaining_bytes, MAX_PAYLOAD_SIZE)
+            while bytes_sent < file_size:
+                remaining = file_size - bytes_sent
+                chunk_size = min(remaining, BUFFER_SIZE)
+                data = b'A' * chunk_size
+                connection.sendall(data)
+                bytes_sent += chunk_size
 
-                packet = struct.pack(
-                    ">IBQQ",
-                    MAGIC_COOKIE,
-                    0x4,  # Payload message type
-                    total_packets,
-                    packet_number,
-                ) + b'A' * payload_size
-                udp_socket.sendto(packet, address)
+            duration = time.time() - start_time
+            speed = (bytes_sent * 8) / duration if duration > 0 else 0
+            print(f"\033[32mCompleted TCP transfer to {address}: "
+                  f"{bytes_sent} bytes in {duration:.2f} seconds "
+                  f"({speed:.1f} bits/second)\033[0m")
 
-            print(f"Sent {total_packets} packets to {address}")
         except Exception as e:
-            print(f"Error handling UDP request from {address}: {e}")
+            print(f"\033[31mError handling TCP client {address}: {e}\033[0m")
+        finally:
+            connection.close()
 
-def accept_connections():
-    tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    tcp_socket.bind(('',SERVER_TCP_PORT))
-    tcp_socket.listen(5)
-    print(f"Server is listening for TCP connections on port {SERVER_TCP_PORT}...")
-    while True:
-        connection, address = tcp_socket.accept()
-        threading.Thread(target=handle_client, args=(connection, address)).start()
+    def handle_udp_requests(self):
+        """Handle UDP client requests."""
+        MAX_PAYLOAD_SIZE = 1400
+        HEADER_SIZE = struct.calcsize(">IBQQ")
+
+        while True:
+            try:
+                data, address = self.udp_socket.recvfrom(BUFFER_SIZE)
+
+                # Parse request
+                magic_cookie, message_type, file_size = struct.unpack(">IBQ", data)
+                if magic_cookie != MAGIC_COOKIE or message_type != 0x3:
+                    continue
+
+                print(f"\033[34mReceived UDP request from {address}: {file_size} bytes\033[0m")
+
+                # Calculate packets needed
+                total_packets = (file_size + MAX_PAYLOAD_SIZE - 1) // MAX_PAYLOAD_SIZE
+                start_time = time.time()
+                bytes_sent = 0
+
+                # Send packets
+                for packet_number in range(total_packets):
+                    remaining = file_size - bytes_sent
+                    payload_size = min(remaining, MAX_PAYLOAD_SIZE)
+
+                    header = struct.pack(
+                        ">IBQQ",
+                        MAGIC_COOKIE,
+                        0x4,
+                        total_packets,
+                        packet_number
+                    )
+                    payload = b'A' * payload_size
+                    self.udp_socket.sendto(header + payload, address)
+                    bytes_sent += payload_size
+
+                duration = time.time() - start_time
+                speed = (bytes_sent * 8) / duration if duration > 0 else 0
+                print(f"\033[34mCompleted UDP transfer to {address}: "
+                      f"{bytes_sent} bytes in {duration:.2f} seconds "
+                      f"({speed:.1f} bits/second)\033[0m")
+
+            except Exception as e:
+                print(f"\033[31mError handling UDP request: {e}\033[0m")
+
+    def run(self):
+        """Start the server."""
+        # Start broadcast thread
+        threading.Thread(target=self.offer_broadcast, daemon=True).start()
+
+        # Start UDP handler thread
+        threading.Thread(target=self.handle_udp_requests, daemon=True).start()
+
+        # Accept TCP connections
+        while True:
+            try:
+                connection, address = self.tcp_socket.accept()
+                threading.Thread(target=self.handle_tcp_client,
+                                 args=(connection, address),
+                                 daemon=True).start()
+            except Exception as e:
+                print(f"\033[31mError accepting connection: {e}\033[0m")
+                time.sleep(1)
+
 
 if __name__ == "__main__":
-    threading.Thread(target=offer_broadcast, daemon=True).start()
-    threading.Thread(target=handle_udp_requests, daemon=True).start()
-    accept_connections()
+    server = SpeedTestServer()
+    server.run()
