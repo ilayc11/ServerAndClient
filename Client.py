@@ -137,8 +137,57 @@ class SpeedTestClient:
                 if tcp_socket:
                     tcp_socket.close()
 
+    '''
+    def handle_udp_transfer_(self, server_ip, udp_port, connection_id):
+        try:
+            start_time = time.time()
+            udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            udp_socket.settimeout(1)
+
+            print(f"{Colors.BLUE}Starting UDP transfer #{connection_id}...{Colors.ENDC}")
+
+            # Calculate the total number of packets needed
+            total_packets = (self.file_size + BUFFER_SIZE - 1) // BUFFER_SIZE
+            bytes_sent = 0
+            last_progress = 0
+
+            # Send packets
+            for packet_number in range(total_packets):
+                start_byte = packet_number * BUFFER_SIZE
+                end_byte = min(start_byte + BUFFER_SIZE, self.file_size)
+
+                # Construct the packet
+                packet_data = struct.pack(">IBQQ", MAGIC_COOKIE, 0x3, total_packets, packet_number)
+                payload = b"x" * (end_byte - start_byte)  # Simulating data
+                udp_socket.sendto(packet_data + payload, (server_ip, udp_port))
+                bytes_sent += len(payload)
+
+                # Display progress every 10%
+                progress = (bytes_sent * 100) // self.file_size
+                if progress - last_progress >= 10:
+                    print(f"{Colors.BLUE}UDP #{connection_id} Progress: {Colors.CYAN}{progress}%{Colors.ENDC}")
+                    last_progress = progress
+
+            end_time = time.time()
+            duration = end_time - start_time
+            speed = (bytes_sent * 8) / duration if duration > 0 else 0
+
+            print(
+                f"{Colors.GREEN}✓ UDP transfer #{connection_id} complete{Colors.ENDC}\n"
+                f"  {Colors.BLUE}├─ Sent: {Colors.CYAN}{format_size(bytes_sent)}{Colors.ENDC}\n"
+                f"  {Colors.BLUE}├─ Time: {Colors.CYAN}{duration:.2f}s{Colors.ENDC}\n"
+                f"  {Colors.BLUE}└─ Speed: {Colors.CYAN}{format_speed(speed)}{Colors.ENDC}"
+            )
+
+        except Exception as e:
+            print(f"{Colors.RED}✗ UDP transfer #{connection_id} error: {e}{Colors.ENDC}")
+        finally:
+            udp_socket.close()
+    ''' # TODO REMOVE THAT METHOD BEFORE SUBMITTING THE ASSIGNMENT
+
     def handle_udp_transfer(self, server_ip, udp_port, connection_id):
         try:
+            print('Entered handle_upd_transfer method ... ')
             start_time = time.time()
             udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             udp_socket.settimeout(1)
@@ -146,7 +195,6 @@ class SpeedTestClient:
             print(f"{Colors.BLUE}Starting UDP transfer #{connection_id}...{Colors.ENDC}")
             request = struct.pack(">IBQ", MAGIC_COOKIE, 0x3, self.file_size)
             udp_socket.sendto(request, (server_ip, udp_port))
-
             received_packets = set()
             total_packets = None
             bytes_received = 0
@@ -154,7 +202,7 @@ class SpeedTestClient:
 
             while self.is_running:
                 try:
-                    data, _ = udp_socket.recvfrom(BUFFER_SIZE)
+                    data, _ = udp_socket.recvfrom(BUFFER_SIZE) # TODO : IN THAT LINE THE CODE RAISE EXCEPTION
                     if len(data) < struct.calcsize(">IBQQ"):
                         continue
 
@@ -163,7 +211,7 @@ class SpeedTestClient:
                     magic_cookie, message_type, total_packets, packet_number = struct.unpack(
                         ">IBQQ", header
                     )
-
+                    print(f"TOTAL PACKETS --->>>> {total_packets}")
                     if magic_cookie != MAGIC_COOKIE or message_type != 0x4:
                         continue
 
@@ -200,6 +248,7 @@ class SpeedTestClient:
             print(f"{Colors.RED}✗ UDP transfer #{connection_id} error: {e}{Colors.ENDC}")
         finally:
             udp_socket.close()
+
 
     def start_speed_test(self):
         self.transfer_threads = []
@@ -265,9 +314,13 @@ class SpeedTestClient:
                 print(f"{Colors.RED}✗ Error: {e}{Colors.ENDC}")
                 time.sleep(1)
 
-        print(f"{Colors.YELLOW}Client shutting down...{Colors.ENDC}")
+        print(f"{Colors.YELLOW}Client shutting down its UDP connection...{Colors.ENDC}")
         udp_socket.close()
-        sys.exit(0)
+
+        # Start new transfer after client received it's all content
+        self.transfers_completed = False
+        self.run()
+        #sys.exit(0)
 
 
 if __name__ == "__main__":

@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 MAGIC_COOKIE = 0xabcddcba
 OFFER_TYPE = 0x2
 UDP_PORT = 13117
-BUFFER_SIZE = 1024
+BUFFER_SIZE = 2028
 MAX_CLIENTS = 100
 MAX_RETRIES = 3
 
@@ -225,23 +225,29 @@ class SpeedTestServer:
 
     def run(self):
         try:
+            # Start broadcast and UDP handler threads
             threading.Thread(target=self.offer_broadcast, daemon=True).start()
             threading.Thread(target=self.handle_udp_requests, daemon=True).start()
 
-            while self.is_running:
+            while True:  # Keep the server running indefinitely
+                print(f"{Colors.GREEN}Server is running and listening for clients...{Colors.ENDC}")
+
                 try:
-                    self.tcp_socket.settimeout(1.0)
+                    self.tcp_socket.settimeout(1.0)  # Avoid blocking indefinitely
                     connection, address = self.tcp_socket.accept()
+                    print(f"{Colors.BLUE}✓ New connection from {address}{Colors.ENDC}")
                     self.thread_pool.submit(self.handle_tcp_client, connection, address)
                 except socket.timeout:
-                    continue
+                    continue  # Timeout is used to periodically check `is_running`
                 except Exception as e:
                     print(f"{Colors.RED}✗ Error accepting connection: {e}{Colors.ENDC}")
                     time.sleep(1)
 
         except KeyboardInterrupt:
-            print(f"{Colors.YELLOW}Server shutting down...{Colors.ENDC}")
+            print(f"{Colors.YELLOW}Server shutting down manually...{Colors.ENDC}")
+
         finally:
+            # Gracefully shutdown the server and clean up resources
             self.is_running = False
             self.tcp_socket.close()
             self.udp_socket.close()
