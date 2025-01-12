@@ -4,70 +4,38 @@ import struct
 import threading
 import sys
 from concurrent.futures import ThreadPoolExecutor
-
-# Constants
-MAGIC_COOKIE = 0xabcddcba
-OFFER_TYPE = 0x2
-UDP_PORT = 13117
-BUFFER_SIZE = 2028
-MAX_CLIENTS = 100
-MAX_RETRIES = 3
-
-
-# ANSI Color codes
-class Colors:
-    HEADER = '\033[95m'  # Pink
-    BLUE = '\033[94m'  # Blue
-    CYAN = '\033[96m'  # Cyan
-    GREEN = '\033[92m'  # Green
-    YELLOW = '\033[93m'  # Yellow
-    RED = '\033[91m'  # Red
-    ENDC = '\033[0m'  # Reset color
-    BOLD = '\033[1m'  # Bold
-    UNDERLINE = '\033[4m'  # Underline
-
-
-def format_size(size_bytes):
-    for unit in ['B', 'KB', 'MB', 'GB']:
-        if size_bytes < 1024.0:
-            return f"{size_bytes:.2f} {unit}"
-        size_bytes /= 1024.0
-    return f"{size_bytes:.2f} TB"
-
-
-def format_speed(bits_per_second):
-    for unit in ['bps', 'Kbps', 'Mbps', 'Gbps']:
-        if bits_per_second < 1000.0:
-            return f"{bits_per_second:.2f} {unit}"
-        bits_per_second /= 1000.0
-    return f"{bits_per_second:.2f} Tbps"
+from multiprocessing import Manager
+from Config import Colors
+import Config
 
 
 class SpeedTestServer:
     def __init__(self):
         try:
-            # Initialize TCP socket
+            # Initialize TCP socket (unchanged)
             self.tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.tcp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.tcp_socket.bind(('', 0))
             self.SERVER_TCP_PORT = self.tcp_socket.getsockname()[1]
 
-            # Initialize UDP socket
+            # Initialize UDP socket (unchanged)
             self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.udp_socket.bind(('', 0))
             self.SERVER_UDP_PORT = self.udp_socket.getsockname()[1]
 
-            # Get server IP
+            # Get server IP (unchanged)
             hostname = socket.gethostname()
             self.SERVER_IP = socket.gethostbyname(hostname)
 
-            self.tcp_socket.listen(MAX_CLIENTS)
+            self.tcp_socket.listen(Config.MAX_CLIENTS)
+
+            # Replace lock and dictionary with thread-safe dictionary
+            manager = Manager()
+            self.active_clients = manager.dict()
 
             self.is_running = True
-            self.thread_pool = ThreadPoolExecutor(max_workers=MAX_CLIENTS)
-            self.active_clients = {}
-            self.clients_lock = threading.Lock()
+            self.thread_pool = ThreadPoolExecutor(max_workers=Config.MAX_CLIENTS)
 
             print(f"{Colors.HEADER}{Colors.BOLD}Speed Test Server Started!{Colors.ENDC}")
             print(f"{Colors.BLUE}Listening on IP address: {Colors.CYAN}{self.SERVER_IP}{Colors.ENDC}")
@@ -79,17 +47,30 @@ class SpeedTestServer:
             sys.exit(1)
 
     def track_client(self, client_address, conn_type):
-        with self.clients_lock:
-            if client_address not in self.active_clients:
-                self.active_clients[client_address] = {'tcp_count': 0, 'udp_count': 0}
-            self.active_clients[client_address][f'{conn_type}_count'] += 1
+        # No need for lock context manager anymore
+        if client_address not in self.active_clients:
+            # Initialize client data in thread-safe way
+            self.active_clients[client_address] = {'tcp_count': 0, 'udp_count': 0}
+
+        # Get current counts
+        client_data = self.active_clients[client_address]
+        client_data[f'{conn_type}_count'] += 1
+        # Update the dictionary
+        self.active_clients[client_address] = client_data
 
     def untrack_client(self, client_address, conn_type):
-        with self.clients_lock:
-            if client_address in self.active_clients:
-                self.active_clients[client_address][f'{conn_type}_count'] -= 1
-                if sum(self.active_clients[client_address].values()) == 0:
-                    del self.active_clients[client_address]
+        # No need for lock context manager anymore
+        if client_address in self.active_clients:
+            # Get current counts
+            client_data = self.active_clients[client_address]
+            client_data[f'{conn_type}_count'] -= 1
+
+            # Remove client if no active connections
+            if sum(client_data.values()) == 0:
+                del self.active_clients[client_address]
+            else:
+                # Update the counts
+                self.active_clients[client_address] = client_data
 
     def offer_broadcast(self):
         udp_broadcast = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -98,11 +79,11 @@ class SpeedTestServer:
         while self.is_running:
             try:
                 message = struct.pack('>IBHH',
-                                      MAGIC_COOKIE,
-                                      OFFER_TYPE,
+                                      Config.MAGIC_COOKIE,
+                                      Config.OFFER_TYPE,
                                       self.SERVER_UDP_PORT,
                                       self.SERVER_TCP_PORT)
-                udp_broadcast.sendto(message, ('<broadcast>', UDP_PORT))
+                udp_broadcast.sendto(message, ('<broadcast>', Config.UDP_PORT))
                 time.sleep(1)
             except Exception as e:
                 print(f"{Colors.RED}Broadcast error: {e}{Colors.ENDC}")
@@ -114,7 +95,7 @@ class SpeedTestServer:
         connection.settimeout(30)
 
         try:
-            request = connection.recv(BUFFER_SIZE).decode().strip()
+            request = connection.recv(Config.SERVER_BUFFER_SIZE).decode().strip()
             if not request:
                 return
 
@@ -123,11 +104,11 @@ class SpeedTestServer:
                 return
 
             print(f"{Colors.GREEN}➜ New TCP client connected from {Colors.CYAN}{address}{Colors.ENDC}")
-            print(f"{Colors.BLUE}Requested size: {Colors.CYAN}{format_size(file_size)}{Colors.ENDC}")
+            print(f"{Colors.BLUE}Requested size: {Colors.CYAN}{Config.format_size(file_size)}{Colors.ENDC}")
 
             bytes_sent = 0
             start_time = time.time()
-            chunk_size = min(BUFFER_SIZE, file_size)
+            chunk_size = min(Config.SERVER_BUFFER_SIZE, file_size)
             data = b'A' * chunk_size
 
             while bytes_sent < file_size and self.is_running:
@@ -146,9 +127,9 @@ class SpeedTestServer:
 
             print(
                 f"{Colors.GREEN}✓ TCP transfer complete to {Colors.CYAN}{address}{Colors.ENDC}\n"
-                f"  {Colors.BLUE}├─ Sent: {Colors.CYAN}{format_size(bytes_sent)}{Colors.ENDC}\n"
+                f"  {Colors.BLUE}├─ Sent: {Colors.CYAN}{Config.format_size(bytes_sent)}{Colors.ENDC}\n"
                 f"  {Colors.BLUE}├─ Time: {Colors.CYAN}{duration:.2f}s{Colors.ENDC}\n"
-                f"  {Colors.BLUE}└─ Speed: {Colors.CYAN}{format_speed(speed)}{Colors.ENDC}"
+                f"  {Colors.BLUE}└─ Speed: {Colors.CYAN}{Config.format_speed(speed)}{Colors.ENDC}"
             )
 
         except Exception as e:
@@ -164,7 +145,7 @@ class SpeedTestServer:
         while self.is_running:
             try:
                 self.udp_socket.settimeout(1.0)
-                data, address = self.udp_socket.recvfrom(BUFFER_SIZE)
+                data, address = self.udp_socket.recvfrom(Config.SERVER_BUFFER_SIZE)
 
                 if len(data) < struct.calcsize(">IBQ"):
                     continue
@@ -173,11 +154,11 @@ class SpeedTestServer:
 
                 try:
                     magic_cookie, message_type, file_size = struct.unpack(">IBQ", data)
-                    if magic_cookie != MAGIC_COOKIE or message_type != 0x3:
+                    if magic_cookie != Config.MAGIC_COOKIE or message_type != 0x3:
                         continue
 
                     print(f"{Colors.GREEN}➜ New UDP request from {Colors.CYAN}{address}{Colors.ENDC}")
-                    print(f"{Colors.BLUE}Requested size: {Colors.CYAN}{format_size(file_size)}{Colors.ENDC}")
+                    print(f"{Colors.BLUE}Requested size: {Colors.CYAN}{Config.format_size(file_size)}{Colors.ENDC}")
 
                     total_packets = (file_size + MAX_PAYLOAD_SIZE - 1) // MAX_PAYLOAD_SIZE
                     start_time = time.time()
@@ -192,7 +173,7 @@ class SpeedTestServer:
 
                         header = struct.pack(
                             ">IBQQ",
-                            MAGIC_COOKIE,
+                            Config.MAGIC_COOKIE,
                             0x4,
                             total_packets,
                             packet_number
@@ -206,10 +187,10 @@ class SpeedTestServer:
                     speed = (bytes_sent * 8) / duration if duration > 0 else 0
                     print(
                         f"{Colors.GREEN}✓ UDP transfer complete to {Colors.CYAN}{address}{Colors.ENDC}\n"
-                        f"  {Colors.BLUE}├─ Sent: {Colors.CYAN}{format_size(bytes_sent)}{Colors.ENDC}\n"
+                        f"  {Colors.BLUE}├─ Sent: {Colors.CYAN}{Config.format_size(bytes_sent)}{Colors.ENDC}\n"
                         f"  {Colors.BLUE}├─ Packets: {Colors.CYAN}{total_packets}{Colors.ENDC}\n"
                         f"  {Colors.BLUE}├─ Time: {Colors.CYAN}{duration:.2f}s{Colors.ENDC}\n"
-                        f"  {Colors.BLUE}└─ Speed: {Colors.CYAN}{format_speed(speed)}{Colors.ENDC}"
+                        f"  {Colors.BLUE}└─ Speed: {Colors.CYAN}{Config.format_speed(speed)}{Colors.ENDC}"
                     )
 
                 except Exception as e:
