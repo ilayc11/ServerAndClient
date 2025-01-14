@@ -12,14 +12,21 @@ import math
 class Server:
     def __init__(self):
         try:
-            # Initialize TCP socket (unchanged)
+            #statistics
+            self.total_tcp_data_sent = 0
+            self.total_udp_data_sent = 0
+            self.tcp_connections = 0
+            self.udp_connections = 0
+            self.transfer_errors = 0
+
+
+            #other things
             self.tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.tcp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.tcp_socket.bind(('', 0))
             self.tcp_socket.settimeout(1.0)
             self.SERVER_TCP_PORT = self.tcp_socket.getsockname()[1]
 
-            # Initialize UDP socket (unchanged)
             self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.udp_socket.bind(('', 0))
@@ -39,21 +46,31 @@ class Server:
             self.is_running = True
             self.thread_pool = ThreadPoolExecutor(max_workers=Config.MAX_CLIENTS)
 
-            print(f"{Colors.HEADER}{Colors.BOLD}Server Started!{Colors.ENDC}")
-            print(f"{Colors.BLUE}Listening on IP address: {Colors.CYAN}{self.SERVER_IP}{Colors.ENDC}")
+            print(f"{Colors.BLUE}Server IP address: {Colors.CYAN}{self.SERVER_IP}{Colors.ENDC}")
             print(f"{Colors.BLUE}TCP Port: {Colors.CYAN}{self.SERVER_TCP_PORT}{Colors.ENDC}")
             print(f"{Colors.BLUE}UDP Port: {Colors.CYAN}{self.SERVER_UDP_PORT}{Colors.ENDC}")
 
         except Exception as e:
-            print(f"{Colors.RED}Failed to initialize server: {e}{Colors.ENDC}")
+            print(f"{Colors.RED}Failed to initialize server: {e}{Colors.ENDC}\n")
             sys.exit(1)
+
+    def print_statistics(self):
+        print(f"{Colors.GREEN}{Colors.BOLD}Server Statistics:{Colors.ENDC}")
+        print(
+            f"{Colors.BLUE}Total TCP data sent: {Colors.CYAN}{Format.format_size(self.total_tcp_data_sent)}{Colors.ENDC}")
+        print(
+            f"{Colors.BLUE}Total UDP data sent: {Colors.CYAN}{Format.format_size(self.total_udp_data_sent)}{Colors.ENDC}")
+        print(f"{Colors.BLUE}TCP connections handled: {Colors.CYAN}{self.tcp_connections}{Colors.ENDC}")
+        print(f"{Colors.BLUE}UDP connections handled: {Colors.CYAN}{self.udp_connections}{Colors.ENDC}")
+        print(f"{Colors.RED}Transfer errors: {Colors.CYAN}{self.transfer_errors}{Colors.ENDC}")
 
     def run(self):
         try:
             # Start broadcast and UDP handler threads
             threading.Thread(target=self.offer_broadcast, daemon=True).start()
             threading.Thread(target=self.handle_udp_requests, daemon=True).start()
-            print(f"{Colors.GREEN}Server is running and listening for clients...{Colors.ENDC}")
+            threading.Thread(target=self.periodic_statistics, daemon=True).start()
+            print(f"{Colors.GREEN}Server is running and listening on IP address {self.SERVER_IP}{Colors.ENDC}")
             while True:  # Keep the server running indefinitely
                 try:
                     connection, address = self.tcp_socket.accept()
@@ -79,6 +96,7 @@ class Server:
     def offer_broadcast(self):
         udp_broadcast = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         udp_broadcast.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        udp_broadcast.bind(("",0))
 
         while self.is_running:
             try:
@@ -115,6 +133,7 @@ class Server:
 
     def handle_tcp_client(self, connection, address):
         self.track_client(address[0], 'tcp')
+        self.tcp_connections+=1
         connection.settimeout(30)
 
         try:
@@ -139,10 +158,12 @@ class Server:
 
             for chunk in generate_data():
                 try:
+
                     connection.sendall(chunk)
                     bytes_sent += len(chunk)
                 except socket.timeout:
                     break
+            self.total_tcp_data_sent += bytes_sent
 
             duration = time.time() - start_time
             speed = (bytes_sent * 8) / duration if duration > 0 else 0
@@ -156,6 +177,7 @@ class Server:
 
         except Exception as e:
             print(f"{Colors.RED}✗ Error handling TCP client {address}: {e}{Colors.ENDC}")
+            self.transfer_errors+=1
         finally:
             connection.close()
             self.untrack_client(address[0], 'tcp')
@@ -169,6 +191,7 @@ class Server:
                     continue
 
                 self.track_client(address[0], 'udp')
+                self.udp_connections+=1
 
                 try:
                     magic_cookie, message_type, file_size = struct.unpack(Config.REQUEST_STRUCT_FORMAT, data)
@@ -204,7 +227,7 @@ class Server:
                         bytes_sent += len(response_data)
 
 
-
+                    self.total_udp_data_sent+=bytes_sent
                     duration = time.time() - start_time
                     speed = (bytes_sent * 8) / duration if duration > 0 else 0
                     print(
@@ -224,8 +247,16 @@ class Server:
                 continue
             except Exception as e:
                 print(f"{Colors.RED}✗ UDP handler error: {e}{Colors.ENDC}")
+                self.transfer_errors += 1
                 time.sleep(1)
+
+    def periodic_statistics(self):
+        while self.is_running:
+            time.sleep(10)  # Print statistics every 10 seconds
+            self.print_statistics()
+
 
 if __name__ == '__main__':
     server = Server()
+    print(f"{Colors.HEADER}{Colors.BOLD}Server Started{Colors.ENDC}")
     server.run()
