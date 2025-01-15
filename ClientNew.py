@@ -4,7 +4,6 @@ import threading
 import time
 import sys
 from queue import Queue
-import signal
 from Config import Colors,Config,Format
 
 
@@ -16,6 +15,8 @@ class Client:
         self.transfers_completed = False
         self.error_queue = Queue()
         self.is_running = True
+
+        #statistics
         self.total_data_received = 0
         self.failed_transfers = 0
         self.tcp_transfers = 0
@@ -45,7 +46,7 @@ class Client:
 
                 if magic_cookie == Config.MAGIC_COOKIE and message_type == Config.OFFER_TYPE:
                     print(
-                        f"  {Colors.BLUE}➜ Recieved offer from {Colors.CYAN}{address[0]}{Colors.ENDC}\n"
+                        f"  {Colors.BLUE}➜ Received offer from {Colors.CYAN}{address[0]}{Colors.ENDC}\n"
                         f"  {Colors.BLUE}├─ UDP Port: {Colors.CYAN}{udp_port}{Colors.ENDC}\n"
                         f"  {Colors.BLUE}└─ TCP Port: {Colors.CYAN}{tcp_port}{Colors.ENDC}\n"
                     )
@@ -65,6 +66,7 @@ class Client:
         udp_socket.close()
         self.transfers_completed = False
         self.run()
+
 
     def get_user_parameters(self):
         try:
@@ -128,7 +130,8 @@ class Client:
             try:
                 start_time = time.time()
                 tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                tcp_socket.settimeout(1.0)
+                timeout = 1.0 + retry * 0.5
+                tcp_socket.settimeout(timeout)
 
                 print(f"{Colors.BLUE}Starting TCP transfer #{connection_id}...{Colors.ENDC}")
                 tcp_socket.connect((server_ip, tcp_port))
